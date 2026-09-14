@@ -1,32 +1,22 @@
-﻿// Copyright (c) Files Community
+// Copyright (c) Files Community
 // Licensed under the MIT License.
 
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using Windows.Win32.Foundation;
+using Windows.Win32.Graphics.DirectComposition;
+using Windows.Win32.Graphics.Gdi;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace Windows.Win32
 {
-	namespace Graphics.Gdi
-	{
-		[UnmanagedFunctionPointer(CallingConvention.Winapi)]
-		public unsafe delegate BOOL MONITORENUMPROC([In] HMONITOR param0, [In] HDC param1, [In][Out] RECT* param2, [In] LPARAM param3);
-	}
-
-	namespace UI.WindowsAndMessaging
-	{
-		[UnmanagedFunctionPointer(CallingConvention.Winapi)]
-		public delegate LRESULT WNDPROC(HWND hWnd, uint msg, WPARAM wParam, LPARAM lParam);
-	}
-
 	public static partial class PInvoke
 	{
-		[DllImport("User32", EntryPoint = "SetWindowLongW", ExactSpelling = true)]
-		static extern int _SetWindowLong(HWND hWnd, int nIndex, int dwNewLong);
+		[LibraryImport("User32", EntryPoint = "SetWindowLongW")]
+		private static partial int _SetWindowLong(nint hWnd, int nIndex, int dwNewLong);
 
-		[DllImport("User32", EntryPoint = "SetWindowLongPtrW", ExactSpelling = true)]
-		static extern nint _SetWindowLongPtr(HWND hWnd, int nIndex, nint dwNewLong);
+		[LibraryImport("User32", EntryPoint = "SetWindowLongPtrW")]
+		private static partial nint _SetWindowLongPtr(nint hWnd, int nIndex, nint dwNewLong);
 
 		// NOTE:
 		//  CsWin32 doesn't generate SetWindowLong on other than x86 and vice versa.
@@ -38,6 +28,19 @@ namespace Windows.Win32
 				: _SetWindowLongPtr(hWnd, (int)nIndex, dwNewLong);
 		}
 
+		[LibraryImport("User32", EntryPoint = "GetWindowLongW")]
+		private static partial int _GetWindowLong(nint hWnd, int nIndex);
+
+		[LibraryImport("User32", EntryPoint = "GetWindowLongPtrW")]
+		private static partial nint _GetWindowLongPtr(nint hWnd, int nIndex);
+
+		public static unsafe nint GetWindowLongPtr(HWND hWnd, WINDOW_LONG_PTR_INDEX nIndex)
+		{
+			return sizeof(nint) is 4
+				? _GetWindowLong(hWnd, (int)nIndex)
+				: _GetWindowLongPtr(hWnd, (int)nIndex);
+		}
+
 		[LibraryImport("shell32.dll", EntryPoint = "SHUpdateRecycleBinIcon", SetLastError = true)]
 		public static partial void SHUpdateRecycleBinIcon();
 
@@ -46,11 +49,17 @@ namespace Windows.Win32
 
 	namespace Extras
 	{
+		[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+		public unsafe delegate BOOL ManagedMONITORENUMPROC([In] HMONITOR param0, [In] HDC param1, [In][Out] RECT* param2, [In] LPARAM param3);
+
+		[UnmanagedFunctionPointer(CallingConvention.Winapi)]
+		public delegate LRESULT ManagedWNDPROC(HWND hWnd, uint msg, WPARAM wParam, LPARAM lParam);
+
 		[GeneratedComInterface, Guid("EACDD04C-117E-4E17-88F4-D1B12B0E3D89"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 		public partial interface IDCompositionTarget
 		{
 			[PreserveSig]
-			int SetRoot(nint visual);
+			int SetRoot(IDCompositionVisual visual);
 		}
 	}
 }

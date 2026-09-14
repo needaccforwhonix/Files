@@ -1,8 +1,9 @@
 ﻿// Copyright (c) Files Community
-// Licensed under the MIT License.
+// SPDX-License-Identifier: MPL-2.0
 
 using Microsoft.UI.Xaml.Input;
 using Windows.System;
+using WinRT;
 
 namespace Files.App.Controls
 {
@@ -14,18 +15,33 @@ namespace Files.App.Controls
 			_textBoxSuggestionsContainerBorder.Width = ActualWidth;
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(UIElement))]
 		private void AutoSuggestBox_GettingFocus(UIElement sender, GettingFocusEventArgs args)
 		{
 			if (args.OldFocusedElement is null)
+			{
+				// Window is regaining activation and restoring focus to the TextBox. TrySetNewFocusedElement can't
+				// move focus to the previously-focused item (it's often a recycled list item and gets rejected), so
+				// ask the host to move focus to its content instead, keeping the omnibar out of edit mode.
+				FocusRedirectRequested?.Invoke(this, System.EventArgs.Empty);
 				return;
-
-			GlobalHelper.WriteDebugStringForOmnibar("The TextBox is getting the focus.");
+			}
 
 			_previouslyFocusedElement = new(args.OldFocusedElement as UIElement);
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(Button))]
 		private void AutoSuggestBox_LosingFocus(UIElement sender, LosingFocusEventArgs args)
 		{
+			// Programmatic focus moves (InputDevice == None) while the user is typing in the
+			// Omnibar - typically a post-folder-load FocusActivePane / FocusFileList - should not
+			// pull focus away and clear the in-progress query. User gestures still pass through.
+			if (args.InputDevice is FocusInputDeviceKind.None && args.FocusState is FocusState.Programmatic)
+			{
+				args.TryCancel();
+				return;
+			}
+
 			// Prevent the TextBox from losing focus when the ModeButton is focused
 			if (args.NewFocusedElement is not Button button ||
 				args.InputDevice is FocusInputDeviceKind.Keyboard ||
@@ -45,6 +61,8 @@ namespace Files.App.Controls
 			_textBox.SelectAll();
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(FlyoutBase))]
+		[DynamicWindowsRuntimeCast(typeof(Popup))]
 		private void AutoSuggestBox_LostFocus(object sender, RoutedEventArgs e)
 		{
 			// TextBox still has focus if the context menu for selected text is open
@@ -56,14 +74,6 @@ namespace Files.App.Controls
 
 			IsFocused = false;
 			IsFocusedChanged?.Invoke(this, new(IsFocused));
-
-			// Workaround to prevent an issue where if the window loses focus and then regains focus,
-			// the AutoSuggestBox will regain focus and the suggestions popup will open again.
-			if (element is TextBox)
-			{
-				_previouslyFocusedElement.TryGetTarget(out var previouslyFocusedElement);
-				previouslyFocusedElement?.Focus(FocusState.Programmatic);
-			}
 		}
 
 		private async void AutoSuggestBox_KeyDown(object sender, KeyRoutedEventArgs e)

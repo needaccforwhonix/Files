@@ -41,37 +41,43 @@ namespace Files.App.Services.Settings
 			set => Set(value);
 		}
 
-		public List<string> TabsOnStartupList
+		public List<string>? TabsOnStartupList
 		{
 			get => Get<List<string>>(null);
 			set => Set(value);
 		}
 
-		public List<string> LastSessionTabList
+		public List<string>? LastSessionTabList
 		{
 			get => Get<List<string>>(null);
 			set => Set(value);
 		}
 
-		public List<string> LastCrashedTabList
+		public int LastSessionSelectedTabIndex
+		{
+			get => Get(-1);
+			set => Set(value);
+		}
+
+		public List<string>? LastCrashedTabList
 		{
 			get => Get<List<string>>(null);
 			set => Set(value);
 		}
 
-		public List<string> PathHistoryList
+		public List<string>? PathHistoryList
 		{
 			get => Get<List<string>>(null);
 			set => Set(value);
 		}
 
-		public List<string> PreviousSearchQueriesList
+		public List<string>? PreviousSearchQueriesList
 		{
 			get => Get<List<string>>(null);
 			set => Set(value);
 		}
 
-		public List<string> PreviousArchiveExtractionLocations
+		public List<string>? PreviousArchiveExtractionLocations
 		{
 			get => Get<List<string>>(null);
 			set => Set(value);
@@ -90,6 +96,12 @@ namespace Files.App.Services.Settings
 		}
 
 		public bool AlwaysSwitchToNewlyOpenedTab
+		{
+			get => Get(false);
+			set => Set(value);
+		}
+
+		public bool ReverseTabScrollDirection
 		{
 			get => Get(false);
 			set => Set(value);
@@ -161,19 +173,7 @@ namespace Files.App.Services.Settings
 			set => Set(value);
 		}
 
-		public bool IsPinnedSectionExpanded
-		{
-			get => Get(true);
-			set => Set(value);
-		}
-
 		public bool ShowLibrarySection
-		{
-			get => Get(false);
-			set => Set(value);
-		}
-
-		public bool IsLibrarySectionExpanded
 		{
 			get => Get(false);
 			set => Set(value);
@@ -185,25 +185,49 @@ namespace Files.App.Services.Settings
 			set => Set(value);
 		}
 
-		public bool IsDriveSectionExpanded
-		{
-			get => Get(false);
-			set => Set(value);
-		}
-
 		public bool ShowCloudDrivesSection
 		{
 			get => Get(true);
 			set => Set(value);
 		}
 
-		public bool IsCloudDriveSectionExpanded
+		public bool ShowNetworkSection
+		{
+			get => Get(true);
+			set => Set(value);
+		}
+
+		public bool ShowWslSection
+		{
+			get => Get(true);
+			set => Set(value);
+		}
+
+		public bool ShowFileTagsSection
+		{
+			get => Get(true);
+			set => Set(value);
+		}
+
+		public bool IsPinnedSectionExpanded
+		{
+			get => Get(true);
+			set => Set(value);
+		}
+
+		public bool IsLibrarySectionExpanded
 		{
 			get => Get(false);
 			set => Set(value);
 		}
 
-		public bool ShowNetworkSection
+		public bool IsDriveSectionExpanded
+		{
+			get => Get(true);
+			set => Set(value);
+		}
+
+		public bool IsCloudDriveSectionExpanded
 		{
 			get => Get(true);
 			set => Set(value);
@@ -215,21 +239,9 @@ namespace Files.App.Services.Settings
 			set => Set(value);
 		}
 
-		public bool ShowWslSection
-		{
-			get => Get(true);
-			set => Set(value);
-		}
-
 		public bool IsWslSectionExpanded
 		{
 			get => Get(false);
-			set => Set(value);
-
-		}
-		public bool ShowFileTagsSection
-		{
-			get => Get(true);
 			set => Set(value);
 		}
 
@@ -381,7 +393,7 @@ namespace Files.App.Services.Settings
 			set => Set((long)value);
 		}
 
-		public Dictionary<string, bool> ShowHashesDictionary
+		public Dictionary<string, bool>? ShowHashesDictionary
 		{
 			get => Get<Dictionary<string, bool>>(null);
 			set => Set(value);

@@ -4,6 +4,7 @@
 using Files.Shared.Helpers;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Settings;
 using Microsoft.Windows.AppLifecycle;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -24,22 +25,48 @@ namespace Files.App
 	{
 		public static Semaphore? Pool { get; set; }
 
+		private const string LaunchCwdKey = "LastLaunchCwd";
+
+		/// <summary>
+		/// Reads and clears the working directory captured by the source process
+		/// in <see cref="Main"/>, falling back to the current process's working
+		/// directory if no value is pending. (#16982)
+		/// </summary>
+		public static string ConsumeLaunchCwd()
+		{
+			var values = ApplicationData.Current.LocalSettings.Values;
+			var cwd = values.TryGetValue(LaunchCwdKey, out var raw) ? raw as string : null;
+			if (cwd is not null)
+				values.Remove(LaunchCwdKey);
+			return string.IsNullOrEmpty(cwd) ? Environment.CurrentDirectory : cwd;
+		}
+
 		static Program()
 		{
+			// Capture the source process's working directory before any potential
+			// activation redirect, so a receiving instance can resolve relative
+			// paths like "." against the terminal's CWD rather than its own. (#16982)
+			ApplicationData.Current.LocalSettings.Values[LaunchCwdKey] = Environment.CurrentDirectory;
+
 			var pool = new Semaphore(0, 1, $"Files-{AppLifecycleHelper.AppEnvironment}-Instance", out var isNew);
 
 			if (!isNew)
 			{
-				// Resume cached instance
-				pool.Release();
-
-				// Redirect to the main process
 				var activePid = ApplicationData.Current.LocalSettings.Values.Get("INSTANCE_ACTIVE", -1);
 				var instance = AppInstance.FindOrRegisterForKey(activePid.ToString());
-				RedirectActivationTo(instance, AppInstance.GetCurrent().GetActivatedEventArgs());
 
-				// Kill the current process
-				Environment.Exit(0);
+				// A stale key resolves to this process itself; redirecting to self would drop the activation
+				if (!instance.IsCurrent)
+				{
+					// Resume cached instance
+					pool.Release();
+
+					// Redirect to the main process
+					RedirectActivationTo(instance, AppInstance.GetCurrent().GetActivatedEventArgs());
+
+					// Kill the current process
+					Environment.Exit(0);
+				}
 			}
 
 			pool.Dispose();
@@ -73,28 +100,32 @@ namespace Files.App
 				}
 			}
 
-			var processes = Process.GetProcessesByName("Files")
-				.Where(ProcessPathPredicate)
-				.Where(p => p.Id != Environment.ProcessId);
-
-			if (!processes.Any())
+			// Off the startup path: MainModule reads cost tens of milliseconds per scanned process
+			_ = Task.Run(static () =>
 			{
-				foreach (var process in Process.GetProcessesByName("Files.App.Server").Where(ProcessPathPredicate))
+				var processes = Process.GetProcessesByName("Files")
+					.Where(ProcessPathPredicate)
+					.Where(p => p.Id != Environment.ProcessId);
+
+				if (!processes.Any())
 				{
-					try
+					foreach (var process in Process.GetProcessesByName("Files.App.Server").Where(ProcessPathPredicate))
 					{
-						process.Kill();
-					}
-					catch
-					{
-						// ignore any exceptions
-					}
-					finally
-					{
-						process.Dispose();
+						try
+						{
+							process.Kill();
+						}
+						catch
+						{
+							// ignore any exceptions
+						}
+						finally
+						{
+							process.Dispose();
+						}
 					}
 				}
-			}
+			});
 
 			// NOTE:
 			//  This has been commented out since out-of-proc WinRT server seems not to support elevation.
@@ -133,7 +164,7 @@ namespace Files.App
 						switch (command.Type)
 						{
 							case ParsedCommandType.ExplorerShellCommand:
-								if (!Constants.UserEnvironmentPaths.ShellPlaces.ContainsKey(command.Payload.ToUpperInvariant()))
+								if (!ShellHelpers.IsSupportedShellPath(command.Payload))
 								{
 									OpenShellCommandInExplorer(command.Payload, Environment.ProcessId);
 									return;
@@ -216,6 +247,12 @@ namespace Files.App
 				currentInstance.Activated += OnActivated;
 
 			ApplicationData.Current.LocalSettings.Values["INSTANCE_ACTIVE"] = -Environment.ProcessId;
+
+			// Optional XAML performance changes must be opted into before XAML initialization
+			XamlOptionalChanges.EnableChange(XamlChangeId.DefaultStyleOptimizations);
+			XamlOptionalChanges.EnableChange(XamlChangeId.OptimizeApplyStyles);
+			XamlOptionalChanges.EnableChange(XamlChangeId.IconNoGridOptimization);
+			XamlOptionalChanges.EnableChange(XamlChangeId.DeferContextFlyoutInit);
 
 			Application.Start((p) =>
 			{

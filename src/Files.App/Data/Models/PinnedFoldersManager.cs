@@ -1,8 +1,10 @@
 // Copyright (c) Files Community
 // Licensed under the MIT License.
 
+using Microsoft.Extensions.Logging;
 using System.Collections.Specialized;
 using System.IO;
+using Windows.Win32.UI.Shell;
 
 namespace Files.App.Data.Models
 {
@@ -42,7 +44,7 @@ namespace Files.App.Data.Models
 
 				PinnedFolders = (await QuickAccessService.GetPinnedFoldersAsync())
 					.Where(link => (bool?)link.Properties["System.Home.IsPinned"] ?? false)
-					.Select(link => link.FilePath).ToList();
+					.Select(link => link.FilePath!).ToList();
 
 				if (formerPinnedFolders.SequenceEqual(PinnedFolders))
 					return;
@@ -71,8 +73,11 @@ namespace Files.App.Data.Models
 
 		public async Task<LocationItem> CreateLocationItemFromPathAsync(string path)
 		{
-			var item = await FilesystemTasks.Wrap(() => DriveHelpers.GetRootFromPathAsync(path));
-			var res = await FilesystemTasks.Wrap(() => StorageFileExtensions.DangerousGetFolderFromPathAsync(path, item));
+			var isLibrary = LibraryManager.IsLibraryPath(path);
+			var libraryDisplayName = isLibrary ? GetLibraryDisplayName(path) : null;
+
+			var item = await FilesystemTasks.WrapNullable(() => DriveHelpers.GetRootFromPathAsync(path));
+			var res = await FilesystemTasks.WrapNullable(() => StorageFileExtensions.DangerousGetFolderFromPathAsync(path, item));
 			LocationItem locationItem;
 
 			if (string.Equals(path, Constants.UserEnvironmentPaths.RecycleBinPath, StringComparison.OrdinalIgnoreCase))
@@ -98,43 +103,64 @@ namespace Files.App.Data.Models
 				ShowEmptyRecycleBin = string.Equals(path, Constants.UserEnvironmentPaths.RecycleBinPath, StringComparison.OrdinalIgnoreCase)
 			};
 			locationItem.IsDefaultLocation = false;
-			locationItem.Text = res?.Result?.DisplayName ?? Path.GetFileName(path.TrimEnd('\\'));
+			locationItem.Text = libraryDisplayName ?? res?.Result?.DisplayName ?? Path.GetFileName(path.TrimEnd('\\'));
 
-			if (res)
+			// Load icons fire-and-forget so the section renders immediately; Icon is observable and swaps in when ready.
+			if (isLibrary)
+			{
+				// Load from the .library-ms directly (isFolder: false) since the path was resolved to a destination folder.
+				locationItem.IsInvalid = false;
+				_ = LoadIconForLocationItemAsync(locationItem, path, isFolder: false);
+			}
+			else if (res)
 			{
 				locationItem.IsInvalid = false;
-				if (res.Result is not null)
-					await LoadIconForLocationItemAsync(locationItem, res.Result.Path);
+				if (res!.Result is { } folder)
+					_ = LoadIconForLocationItemAsync(locationItem, folder.Path);
 			}
 			else
 			{
 				locationItem.IsInvalid = true;
 				Debug.WriteLine($"Pinned item was invalid {res?.ErrorCode}, item: {path}");
-				await LoadDefaultIconForLocationItemAsync(locationItem);
+				_ = LoadDefaultIconForLocationItemAsync(locationItem);
 			}
 
 			return locationItem;
 		}
 
-		private async Task LoadIconForLocationItemAsync(LocationItem locationItem, string path)
+		private static string? GetLibraryDisplayName(string libraryPath)
+		{
+			using var storable = WindowsStorable.TryParse(libraryPath);
+			if (storable is null)
+				return null;
+
+			var displayName = storable.GetDisplayName(SIGDN.SIGDN_NORMALDISPLAY);
+			return string.IsNullOrEmpty(displayName) ? null : displayName;
+		}
+
+		private async Task LoadIconForLocationItemAsync(LocationItem locationItem, string path, bool isFolder = true)
 		{
 			try
 			{
 				var result = await FileThumbnailHelper.GetIconAsync(
 					path,
 					Constants.ShellIconSizes.Small,
-					true,
-					IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
+					isFolder,
+					IconOptions.ReturnIconOnly | IconOptions.SkipSizeSnapping);
 
 				locationItem.IconData = result;
 
-				var bitmapImage = await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(() => locationItem.IconData.ToBitmapAsync(), Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
-				if (bitmapImage is not null)
-					locationItem.Icon = bitmapImage;
+				// Assign Icon on the UI thread: it raises PropertyChanged, which builds a XAML IconElement in a realized SidebarItem.
+				await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () =>
+				{
+					var bitmapImage = await locationItem.IconData.ToBitmapAsync();
+					if (bitmapImage is not null)
+						locationItem.Icon = bitmapImage;
+				});
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"Error loading icon for {path}: {ex.Message}");
+				App.Logger.LogWarning(ex, $"Error loading icon for {path}");
 			}
 		}
 
@@ -142,8 +168,11 @@ namespace Files.App.Data.Models
 		{
 			try
 			{
-				var defaultIcon = await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(() => UIHelpers.GetSidebarIconResource(Constants.ImageRes.Folder));
-				locationItem.Icon = defaultIcon;
+				await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () =>
+				{
+					var defaultIcon = await UIHelpers.GetSidebarIconResource(Constants.ImageRes.Folder);
+					locationItem.Icon = defaultIcon;
+				});
 			}
 			catch (Exception ex)
 			{
@@ -188,9 +217,27 @@ namespace Files.App.Data.Models
 		/// </summary>
 		public async Task AddAllItemsToSidebarAsync()
 		{
-			if (userSettingsService.GeneralSettingsService.ShowPinnedSection)
-				foreach (string path in PinnedFolders)
-					await AddItemToSidebarAsync(path);
+			if (!userSettingsService.GeneralSettingsService.ShowPinnedSection)
+				return;
+
+			// Build items concurrently to avoid serializing N shell round-trips on the startup path.
+			var locationItems = await Task.WhenAll(PinnedFolders.Select(p => CreateLocationItemFromPathAsync(p)));
+
+			lock (_PinnedFolderItems)
+			{
+				foreach (var locationItem in locationItems)
+				{
+					if (_PinnedFolderItems.Any(x => x.Path == locationItem.Path))
+						continue;
+
+					var lastItem = _PinnedFolderItems.LastOrDefault(x => x.ItemType is NavigationControlItemType.Location);
+					var insertIndex = lastItem is not null ? _PinnedFolderItems.IndexOf(lastItem) + 1 : 0;
+					_PinnedFolderItems.Insert(insertIndex, locationItem);
+				}
+			}
+
+			// One ordered Reset instead of per-item Add events, which can interleave on the dispatcher and land out of order.
+			DataChanged?.Invoke(SectionType.Pinned, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
 		}
 
 		/// <summary>
@@ -201,7 +248,7 @@ namespace Files.App.Data.Models
 			// Remove unpinned items from PinnedFolderItems
 			foreach (var childItem in PinnedFolderItems)
 			{
-				if (childItem is LocationItem item && !item.IsDefaultLocation && !PinnedFolders.Contains(item.Path))
+				if (childItem is LocationItem item && !item.IsDefaultLocation && !Enumerable.Contains<string?>(PinnedFolders, item.Path))
 				{
 					lock (_PinnedFolderItems)
 					{

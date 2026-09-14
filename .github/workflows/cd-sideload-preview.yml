@@ -94,6 +94,10 @@ jobs:
         -p:Configuration=$env:CONFIGURATION `
         -v:quiet
 
+    - name: Hide NuGet.Config from signing action
+      shell: pwsh
+      run: Move-Item NuGet.Config NuGet.Config.bak
+
     - name: Sign launcher EXE with Azure Trusted Signing
       uses: Azure/artifact-signing-action@v1
       with:
@@ -109,6 +113,11 @@ jobs:
         file-digest: SHA256
         timestamp-rfc3161: http://timestamp.acs.microsoft.com
         timestamp-digest: SHA256
+
+    - name: Restore NuGet.Config
+      if: always()
+      shell: pwsh
+      run: Move-Item NuGet.Config.bak NuGet.Config
 
     - name: Build & package Files
       shell: pwsh
@@ -126,6 +135,17 @@ jobs:
             -p:UapAppxPackageBuildMode=Sideload `
             -v:quiet
         }
+      env:
+        SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+    - name: Upload debug symbols to Sentry
+      shell: pwsh
+      run: |
+        if (-not $env:SENTRY_AUTH_TOKEN) { Write-Host 'SENTRY_AUTH_TOKEN not set; skipping symbol upload'; exit 0 }
+        npm install --global @sentry/cli
+        sentry-cli debug-files upload --org files-org --project files-app src\Files.App\bin src\Files.App\obj
+      env:
+        SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
     - name: Create msixbundle and appinstaller
       shell: pwsh
@@ -140,6 +160,10 @@ jobs:
     - name: Remove empty files from the packages
       shell: bash
       run: find $ARTIFACTS_STAGING_DIR -empty -delete
+
+    - name: Hide NuGet.Config from signing action
+      shell: pwsh
+      run: Move-Item NuGet.Config NuGet.Config.bak
 
     - name: Sign Files with Azure Trusted Signing
       uses: Azure/artifact-signing-action@v1
@@ -157,6 +181,11 @@ jobs:
         file-digest: SHA256
         timestamp-rfc3161: http://timestamp.acs.microsoft.com
         timestamp-digest: SHA256
+
+    - name: Restore NuGet.Config
+      if: always()
+      shell: pwsh
+      run: Move-Item NuGet.Config.bak NuGet.Config
 
     - name: Upload packages to Cloudflare
       uses: ryand56/r2-upload-action@latest

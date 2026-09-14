@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Shapes;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
 using Windows.Win32;
+using WinRT;
 
 namespace Files.App.UserControls.TabBar
 {
@@ -18,6 +19,7 @@ namespace Files.App.UserControls.TabBar
 
 		private readonly ICommandManager Commands = Ioc.Default.GetRequiredService<ICommandManager>();
 		private readonly IAppearanceSettingsService AppearanceSettingsService = Ioc.Default.GetRequiredService<IAppearanceSettingsService>();
+		private readonly IGeneralSettingsService GeneralSettingsService = Ioc.Default.GetRequiredService<IGeneralSettingsService>();
 		private readonly IWindowContext WindowContext = Ioc.Default.GetRequiredService<IWindowContext>();
 
 		// Fields
@@ -54,6 +56,8 @@ namespace Files.App.UserControls.TabBar
 		// Events
 
 		public static event EventHandler<TabBarItem?>? SelectedTabItemChanged;
+		public static event EventHandler<TabBarItem?>? TabDragStarted;
+		public static event EventHandler<TabBarItem?>? TabDragCompleted;
 
 		// Constructor
 
@@ -78,7 +82,11 @@ namespace Files.App.UserControls.TabBar
 		private void TabView_TabItemsChanged(TabView sender, Windows.Foundation.Collections.IVectorChangedEventArgs args)
 		{
 			if (args.CollectionChange == Windows.Foundation.Collections.CollectionChange.ItemRemoved)
-				App.AppModel.TabStripSelectedIndex = Items.IndexOf(HorizontalTabView.SelectedItem as TabBarItem);
+			{
+				App.AppModel.TabStripSelectedIndex = HorizontalTabView.SelectedItem is TabBarItem selectedItem
+					? Items.IndexOf(selectedItem)
+					: -1;
+			}
 
 			if (App.AppModel.TabStripSelectedIndex >= 0 && App.AppModel.TabStripSelectedIndex < Items.Count)
 			{
@@ -99,19 +107,25 @@ namespace Files.App.UserControls.TabBar
 
 		private async void TabViewItem_Drop(object sender, DragEventArgs e)
 		{
-			await ((sender as TabViewItem).DataContext as TabBarItem).TabItemContent.TabItemDrop(sender, e);
+			if (sender is not TabViewItem { DataContext: TabBarItem { TabItemContent: { } tabContent } })
+				return;
+
+			await tabContent.TabItemDrop(sender, e);
 			HorizontalTabView.CanReorderTabs = true;
 			tabHoverTimer.Stop();
 		}
 
 		private async void TabViewItem_DragEnter(object sender, DragEventArgs e)
 		{
-			await ((sender as TabViewItem).DataContext as TabBarItem).TabItemContent.TabItemDragOver(sender, e);
+			if (sender is not TabViewItem { DataContext: TabBarItem { TabItemContent: { } tabContent } } tabViewItem)
+				return;
+
+			await tabContent.TabItemDragOver(sender, e);
 			if (e.AcceptedOperation != DataPackageOperation.None)
 			{
 				HorizontalTabView.CanReorderTabs = false;
 				tabHoverTimer.Start();
-				hoveredTabViewItem = sender as TabViewItem;
+				hoveredTabViewItem = tabViewItem;
 			}
 		}
 
@@ -122,11 +136,11 @@ namespace Files.App.UserControls.TabBar
 		}
 
 		// Select tab that is hovered over for a certain duration
-		private void TabHoverSelected(object sender, object e)
+		private void TabHoverSelected(object? sender, object e)
 		{
 			tabHoverTimer.Stop();
-			if (hoveredTabViewItem is not null)
-				App.AppModel.TabStripSelectedIndex = Items.IndexOf(hoveredTabViewItem.DataContext as TabBarItem);
+			if (hoveredTabViewItem?.DataContext is TabBarItem tabItem)
+				App.AppModel.TabStripSelectedIndex = Items.IndexOf(tabItem);
 		}
 
 		private void TabView_TabDragStarting(TabView sender, TabViewTabDragStartingEventArgs args)
@@ -134,7 +148,9 @@ namespace Files.App.UserControls.TabBar
 			// Reset value
 			isCancelingDragOperation = false;
 
-			var tabViewItemArgs = (args.Item as TabBarItem).NavigationParameter;
+			if (args.Item is not TabBarItem { NavigationParameter: { } tabViewItemArgs } tabItem)
+				return;
+
 			args.Data.Properties.Add(TabPathIdentifier, tabViewItemArgs.Serialize());
 			args.Data.RequestedOperation = DataPackageOperation.Move;
 
@@ -146,6 +162,8 @@ namespace Files.App.UserControls.TabBar
 			// and the PreviewKeyDown event won't trigger.
 			Focus(FocusState.Programmatic);
 			PreviewKeyDown += TabDragging_PreviewKeyDown;
+
+			TabDragStarted?.Invoke(this, tabItem);
 		}
 
 		private void TabDragging_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
@@ -178,6 +196,8 @@ namespace Files.App.UserControls.TabBar
 			HorizontalTabView.CanReorderTabs = WindowContext.CanDragAndDrop;
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(TabView))]
+		[DynamicWindowsRuntimeCast(typeof(TabViewItem))]
 		private async void TabView_TabStripDrop(object sender, DragEventArgs e)
 		{
 			HorizontalTabView.CanReorderTabs = WindowContext.CanDragAndDrop;
@@ -193,7 +213,7 @@ namespace Files.App.UserControls.TabBar
 
 			for (int i = 0; i < tabStrip.TabItems.Count; i++)
 			{
-				var item = tabStrip.ContainerFromIndex(i) as TabViewItem;
+				var item = (tabStrip.ContainerFromIndex(i) as TabViewItem)!;
 
 				if (e.GetPosition(item).X - item.ActualWidth < 0)
 				{
@@ -202,7 +222,16 @@ namespace Files.App.UserControls.TabBar
 				}
 			}
 
-			var tabViewItemArgs = TabBarItemParameter.Deserialize(tabViewItemString);
+			TabBarItemParameter tabViewItemArgs;
+			try
+			{
+				tabViewItemArgs = TabBarItemParameter.Deserialize(tabViewItemString);
+			}
+			catch (JsonException)
+			{
+				return;
+			}
+
 			ApplicationData.Current.LocalSettings.Values[TabDropHandledIdentifier] = true;
 			await NavigationHelpers.AddNewTabByParamAsync(tabViewItemArgs.InitialPageType, tabViewItemArgs.NavigationParameter, index);
 		}
@@ -211,6 +240,8 @@ namespace Files.App.UserControls.TabBar
 		{
 			// Unsubscribe from the key down event, it's only needed when a tab is actively being dragged
 			PreviewKeyDown -= TabDragging_PreviewKeyDown;
+
+			TabDragCompleted?.Invoke(this, args.Item as TabBarItem);
 
 			if (ApplicationData.Current.LocalSettings.Values.ContainsKey(TabDropHandledIdentifier) &&
 				(bool)ApplicationData.Current.LocalSettings.Values[TabDropHandledIdentifier])
@@ -240,33 +271,34 @@ namespace Files.App.UserControls.TabBar
 				return;
 
 			var indexOfTabViewItem = sender.TabItems.IndexOf(args.Item);
-			var tabViewItemArgs = (args.Item as TabBarItem).NavigationParameter;
+			if (args.Item is not TabBarItem { NavigationParameter: { } tabViewItemArgs } tabItem)
+				return;
+
 			var selectedTabViewItemIndex = sender.SelectedIndex;
 
-			Items.Remove(args.Item as TabBarItem);
-			if (!await NavigationHelpers.OpenTabInNewWindowAsync(tabViewItemArgs.Serialize()))
+			Items.Remove(tabItem);
+			if (!await NavigationHelpers.OpenTabInNewWindowAsync(tabViewItemArgs.Serialize(), droppedPoint.X, droppedPoint.Y))
 			{
-				Items.Insert(indexOfTabViewItem, args.Item as TabBarItem);
+				Items.Insert(indexOfTabViewItem, tabItem);
 				sender.SelectedIndex = selectedTabViewItemIndex;
 			}
 			else
 				// Dispose tab arguments
-				(args.Item as TabBarItem)?.Unload();
+				tabItem.Unload();
 		}
 
 		private void TabView_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
 		{
 			var delta = e.GetCurrentPoint(null).Properties.MouseWheelDelta;
+			var scrollUpSelectsNextTab = !GeneralSettingsService.ReverseTabScrollDirection;
 
-			if (delta > 0)
+			if ((delta > 0) == scrollUpSelectsNextTab)
 			{
-				// Scroll up, select the next tab
 				if (App.AppModel.TabStripSelectedIndex < Items.Count - 1)
 					App.AppModel.TabStripSelectedIndex++;
 			}
 			else
 			{
-				// Scroll down, select the previous tab
 				if (App.AppModel.TabStripSelectedIndex > 0)
 					App.AppModel.TabStripSelectedIndex--;
 			}
@@ -274,6 +306,7 @@ namespace Files.App.UserControls.TabBar
 			e.Handled = true;
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(MenuFlyout))]
 		private void TabItemContextMenu_Opening(object sender, object e)
 		{
 			MenuItemMoveTabToNewWindow.IsEnabled = Items.Count > 1;
@@ -344,6 +377,8 @@ namespace Files.App.UserControls.TabBar
 			return HorizontalTabView.ContainerFromItem(item);
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(TabViewItem))]
+		[DynamicWindowsRuntimeCast(typeof(ContentControl))]
 		private void TabViewItem_Loaded(object sender, RoutedEventArgs e)
 		{
 			if (sender is TabViewItem tvi && tvi.FindDescendant("IconControl") is ContentControl control)
@@ -368,8 +403,8 @@ namespace Files.App.UserControls.TabBar
 
 			RightPaddingColumn.Width = new(titleBarInset > 40 ? titleBarInset : 138);
 			HorizontalTabView.Measure(new(
-				HorizontalTabView.ActualWidth - TabBarAddNewTabButton.Width - titleBarInset,
-				HorizontalTabView.ActualHeight));
+				Math.Max(0, HorizontalTabView.ActualWidth - TabBarAddNewTabButton.Width - titleBarInset),
+				Math.Max(0, HorizontalTabView.ActualHeight)));
 		}
 	}
 }

@@ -93,7 +93,7 @@ namespace Files.App.Actions
 				{
 					FileName = "wt.exe",
 					Arguments = args.ToString(),
-					UseShellExecute = true
+					UseShellExecute = false
 				};
 			}
 
@@ -127,13 +127,13 @@ namespace Files.App.Actions
 			if (context.HasSelection)
 			{
 				return context.SelectedItems!
-					.Where(item => item.PrimaryItemAttribute is StorageItemTypes.Folder)
-					.Select(item => item.ItemPath)
+					.Where(item => item.PrimaryItemAttribute is StorageItemTypes.Folder && !item.IsArchive)
+					.Select(item => item.ItemPath!)
 					.ToArray();
 			}
 			else if (context.Folder is not null)
 			{
-				return [context.Folder.ItemPath];
+				return [context.Folder.ItemPath!];
 			}
 
 			return [];
@@ -152,7 +152,9 @@ namespace Files.App.Actions
 			if (context.SelectedItems.Count > Constants.Actions.MaxSelectedItems)
 				return false;
 
-			return context.SelectedItems.Any(item => item.PrimaryItemAttribute is StorageItemTypes.Folder) || !isFolderNull;
+			return context.HasSelection
+				? context.SelectedItems.Any(item => item.PrimaryItemAttribute is StorageItemTypes.Folder && !item.IsArchive)
+				: !isFolderNull;
 		}
 
 		private void Context_PropertyChanged(object? sender, PropertyChangedEventArgs e)

@@ -1,4 +1,4 @@
-﻿// Copyright (c) Files Community
+// Copyright (c) Files Community
 // Licensed under the MIT License.
 
 using Microsoft.Extensions.Logging;
@@ -12,10 +12,10 @@ namespace Files.App.Utils
 {
 	public sealed class WindowsStorageDeviceWatcher : IStorageDeviceWatcher
 	{
-		public event EventHandler<IFolder> DeviceAdded;
-		public event EventHandler<string> DeviceRemoved;
-		public event EventHandler EnumerationCompleted;
-		public event EventHandler<string> DeviceModified;
+		public event EventHandler<IFolder>? DeviceAdded;
+		public event EventHandler<string>? DeviceRemoved;
+		public event EventHandler? EnumerationCompleted;
+		public event EventHandler<string>? DeviceModified;
 
 		private DeviceWatcher watcher;
 
@@ -33,10 +33,10 @@ namespace Files.App.Utils
 
 		private void SetupWin32Watcher()
 		{
-			DeviceManager.Default.DeviceAdded += Win32_OnDeviceAdded;
-			DeviceManager.Default.DeviceRemoved += Win32_OnDeviceRemoved;
-			DeviceManager.Default.DeviceInserted += Win32_OnDeviceEjectedOrInserted;
-			DeviceManager.Default.DeviceEjected += Win32_OnDeviceEjectedOrInserted;
+			WindowsDriveManager.Default.DeviceAdded += Win32_OnDeviceAdded;
+			WindowsDriveManager.Default.DeviceRemoved += Win32_OnDeviceRemoved;
+			WindowsDriveManager.Default.DeviceInserted += Win32_OnDeviceEjectedOrInserted;
+			WindowsDriveManager.Default.DeviceEjected += Win32_OnDeviceEjectedOrInserted;
 		}
 
 		private void Win32_OnDeviceEjectedOrInserted(object? sender, DeviceEventArgs e)
@@ -55,10 +55,10 @@ namespace Files.App.Utils
 			if (!driveAdded.IsReady && !IsUnauthorizedDrive(driveAdded))
 				return;
 
-			var rootAdded = await FilesystemTasks.Wrap(() => StorageFolder.GetFolderFromPathAsync(e.DeviceId).AsTask());
-			if (!rootAdded)
+			var rootResult = await FilesystemTasks.Wrap(() => StorageFolder.GetFolderFromPathAsync(e.DeviceId).AsTask());
+			if (rootResult.Result is not { } rootAdded)
 			{
-				App.Logger.LogWarning($"{rootAdded.ErrorCode}: Attempting to add the device, {e.DeviceId},"
+				App.Logger.LogWarning($"{rootResult.ErrorCode}: Attempting to add the device, {e.DeviceId},"
 					+ " failed at the StorageFolder initialization step. This device will be ignored.");
 				return;
 			}
@@ -90,7 +90,7 @@ namespace Files.App.Utils
 			}
 			catch (Exception ex) when (ex is ArgumentException or UnauthorizedAccessException or COMException)
 			{
-				App.Logger.LogWarning($"{ex.GetType()}: Attempting to add the device, {args.Name},"
+				App.Logger.LogWarning($"{ex.GetType()}: Attempting to add the device, {LogPathHelper.RedactPath(args.Name)},"
 					+ $" failed at the StorageFolder initialization step. This device will be ignored. Device ID: {deviceId}");
 				return;
 			}
@@ -120,6 +120,7 @@ namespace Files.App.Utils
 
 		public void Start()
 		{
+			WindowsDriveManager.Default.Start();
 			watcher.Start();
 		}
 
@@ -134,10 +135,11 @@ namespace Files.App.Utils
 			watcher.Removed -= Watcher_Removed;
 			watcher.EnumerationCompleted -= Watcher_EnumerationCompleted;
 
-			DeviceManager.Default.DeviceAdded -= Win32_OnDeviceAdded;
-			DeviceManager.Default.DeviceRemoved -= Win32_OnDeviceRemoved;
-			DeviceManager.Default.DeviceInserted -= Win32_OnDeviceEjectedOrInserted;
-			DeviceManager.Default.DeviceEjected -= Win32_OnDeviceEjectedOrInserted;
+			WindowsDriveManager.Default.DeviceAdded -= Win32_OnDeviceAdded;
+			WindowsDriveManager.Default.DeviceRemoved -= Win32_OnDeviceRemoved;
+			WindowsDriveManager.Default.DeviceInserted -= Win32_OnDeviceEjectedOrInserted;
+			WindowsDriveManager.Default.DeviceEjected -= Win32_OnDeviceEjectedOrInserted;
+			WindowsDriveManager.Default.Stop();
 		}
 
 		private bool IsUnauthorizedDrive(DriveInfo driveInfo)

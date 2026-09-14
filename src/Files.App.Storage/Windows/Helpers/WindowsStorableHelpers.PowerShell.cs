@@ -1,5 +1,5 @@
 ﻿// Copyright (c) Files Community
-// Licensed under the MIT License.
+// SPDX-License-Identifier: MPL-2.0
 
 namespace Files.App.Storage
 {
@@ -7,9 +7,17 @@ namespace Files.App.Storage
 	{
 		public static async Task<bool> TrySetShortcutIconOnPowerShellAsElevatedAsync(this IWindowsStorable storable, IWindowsStorable iconFile, int index)
 		{
+			static string ToPowerShellStringLiteral(string value)
+				=> $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+
+			var filePath = storable.ToString();
+			var iconPath = iconFile.ToString();
+			if (string.IsNullOrEmpty(filePath) || string.IsNullOrEmpty(iconPath))
+				return false;
+
 			string psScript =
-				$@"$FilePath = '{storable}'
-					$IconFile = '{iconFile}'
+				$@"$FilePath = {ToPowerShellStringLiteral(filePath)}
+					$IconFile = {ToPowerShellStringLiteral(iconPath)}
 					$IconIndex = '{index}'
 
 					$Shell = New-Object -ComObject WScript.Shell

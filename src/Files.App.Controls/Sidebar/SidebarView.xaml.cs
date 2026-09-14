@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Markup;
 using Windows.Foundation;
 using Windows.System;
 using Windows.UI.Core;
+using WinRT;
 
 namespace Files.App.Controls
 {
@@ -36,8 +37,8 @@ namespace Files.App.Controls
 
 		internal void RaiseItemInvoked(SidebarItem item, PointerUpdateKind pointerUpdateKind)
 		{
-			// Only leaves can be selected
-			if (item.Item is null || item.IsGroupHeader) return;
+			// Only true group headers (e.g. Pinned, Drives) suppress selection; leaves-with-children (tree-view folder rows) navigate AND get selected.
+			if (item.Item is null || (item.IsGroupHeader && item.Item.IsLeafWithChildren != true)) return;
 
 			SelectedItem = item.Item;
 			ItemInvoked?.Invoke(item, new(pointerUpdateKind));
@@ -136,6 +137,13 @@ namespace Files.App.Controls
 			PaneColumnGrid.Translation = new System.Numerics.Vector3(0, 0, 32);
 		}
 
+		public double VerticalScrollOffset => MenuItemHostScrollViewer?.VerticalOffset ?? 0;
+
+		public void ScrollToVerticalOffset(double offset)
+		{
+			MenuItemHostScrollViewer?.ChangeView(null, offset, null, true);
+		}
+
 		private void SidebarResizer_ManipulationStarted(object sender, ManipulationStartedRoutedEventArgs e)
 		{
 			if (!CanResizePane)
@@ -229,6 +237,7 @@ namespace Files.App.Controls
 			}
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(FrameworkElement))]
 		private void SidebarResizer_PointerEntered(object sender, PointerRoutedEventArgs e)
 		{
 			if (!CanResizePane)
@@ -240,6 +249,7 @@ namespace Files.App.Controls
 			e.Handled = true;
 		}
 
+		[DynamicWindowsRuntimeCast(typeof(FrameworkElement))]
 		private void SidebarResizer_PointerExited(object sender, PointerRoutedEventArgs e)
 		{
 			if (!CanResizePane || draggingSidebarResizer)
@@ -268,6 +278,8 @@ namespace Files.App.Controls
 		{
 			if (args.Element is SidebarItem sidebarItem)
 			{
+				// Assign Owner from the hosting SidebarView rather than letting the row's HookupOwners FindAscendant walk resolve it: that walk picks up the WRONG SidebarView when this view is the nested SettingsSidebar inside SidebarControl.InnerContent (and a stale Owner from a prior realization can persist across container recycling). Owner drives both the click-routing target and the chevron-column visual state.
+				sidebarItem.Owner = this;
 				sidebarItem.HandleItemChange();
 			}
 		}

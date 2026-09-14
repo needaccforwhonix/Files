@@ -1,4 +1,4 @@
-﻿// Copyright (c) Files Community
+// Copyright (c) Files Community
 // Licensed under the MIT License.
 
 using Microsoft.UI.Input;
@@ -35,6 +35,7 @@ namespace Files.App.ViewModels.UserControls.Widgets
 
 		// TODO: Replace with IMutableFolder.GetWatcherAsync() once it gets implemented in IWindowsStorable
 		private readonly SystemIO.FileSystemWatcher? _quickAccessFolderWatcher;
+		private bool isDisposed;
 
 		// Constructor
 
@@ -57,15 +58,18 @@ namespace Files.App.ViewModels.UserControls.Widgets
 				NotifyFilter = SystemIO.NotifyFilters.LastAccess | SystemIO.NotifyFilters.LastWrite | SystemIO.NotifyFilters.FileName
 			};
 
-			_quickAccessFolderWatcher.Changed += async (s, e) =>
-			{
-				await RefreshWidgetAsync();
-			};
+			_quickAccessFolderWatcher.Changed += QuickAccessFolderWatcher_Changed;
 
 			_quickAccessFolderWatcher.EnableRaisingEvents = true;
 		}
 
 		// Methods
+
+		private async void QuickAccessFolderWatcher_Changed(object sender, SystemIO.FileSystemEventArgs e)
+		{
+			if (!isDisposed)
+				await RefreshWidgetAsync();
+		}
 
 		public Task RefreshWidgetAsync()
 		{
@@ -104,9 +108,32 @@ namespace Files.App.ViewModels.UserControls.Widgets
 				{
 					IsVisible = UserSettingsService.GeneralSettingsService.ShowOpenInNewWindow && CommandManager.OpenInNewWindowFromHome.IsExecutable
 				}.Build(),
-				new ContextMenuFlyoutItemViewModelBuilder(CommandManager.OpenInNewPaneFromHome)
+				new ContextMenuFlyoutItemViewModel()
 				{
-					IsVisible = UserSettingsService.GeneralSettingsService.ShowOpenInNewPane && CommandManager.OpenInNewPaneFromHome.IsExecutable
+					Text = Strings.OpenInNewPane.GetLocalizedResource(),
+					ShowItem = UserSettingsService.GeneralSettingsService.ShowOpenInNewPane && CommandManager.OpenInNewPaneFromHome.IsExecutable,
+					IsEnabled = CommandManager.OpenInNewPaneFromHome.IsExecutable,
+					Items =
+					[
+						new ContextMenuFlyoutItemViewModel()
+						{
+							Text = Strings.SplitPaneVertically.GetLocalizedResource(),
+							ThemedIconModel = new() { ThemedIconStyle = "App.ThemedIcons.OpenInPaneVertical" },
+							Command = CommandManager.OpenInNewPaneFromHome,
+							CommandParameter = ShellPaneArrangement.Vertical,
+						},
+						new ContextMenuFlyoutItemViewModel()
+						{
+							Text = Strings.SplitPaneHorizontally.GetLocalizedResource(),
+							ThemedIconModel = new() { ThemedIconStyle = "App.ThemedIcons.OpenInPaneHorizontal" },
+							Command = CommandManager.OpenInNewPaneFromHome,
+							CommandParameter = ShellPaneArrangement.Horizontal,
+						},
+					]
+				},
+				new ContextMenuFlyoutItemViewModelBuilder(CommandManager.OpenInOtherPaneFromHome)
+				{
+					IsVisible = UserSettingsService.GeneralSettingsService.ShowOpenInNewPane && CommandManager.OpenInOtherPaneFromHome.IsExecutable
 				}.Build(),
 				new ContextMenuFlyoutItemViewModelBuilder(CommandManager.CopyItemFromHome)
 				{
@@ -207,25 +234,20 @@ namespace Files.App.ViewModels.UserControls.Widgets
 			if (currentPinnedItemIndex is -1)
 				return;
 
-			HRESULT hr = default;
-			using ComPtr<IAgileReference> pAgileReference = default;
-
-			unsafe
-			{
-				hr = PInvoke.RoGetAgileReference(AgileReferenceOptions.AGILEREFERENCE_DEFAULT, IID.IID_IShellItem, (IUnknown*)folderCardItem.Item.ThisPtr, pAgileReference.GetAddressOf());
-			}
+			HRESULT hr = PInvoke.RoGetAgileReference(AgileReferenceOptions.AGILEREFERENCE_DEFAULT, typeof(IShellItem).GUID, folderCardItem.Item.ThisPtr, out IAgileReference pAgileReference);
+			if (hr.ThrowIfFailedOnDebug().Failed)
+				return;
 
 			// Pin to Quick Access on Windows
 			hr = await STATask.Run(() =>
 			{
-				unsafe
-				{
-					IShellItem* pShellItem = null;
-					hr = pAgileReference.Get()->Resolve(IID.IID_IShellItem, (void**)&pShellItem);
-					using var windowsFile = new WindowsFile(pShellItem);
-					// NOTE: "pintohome" is an undocumented verb, which calls an undocumented COM class, windows.storage.dll!CPinToFrequentExecute : public IExecuteCommand, ...
-					return windowsFile.TryInvokeContextMenuVerb("pintohome");
-				}
+				hr = pAgileReference.Resolve(out IShellItem pShellItem);
+				if (hr.ThrowIfFailedOnDebug().Failed)
+					return hr;
+
+				using var windowsFile = new WindowsFile(pShellItem);
+				// NOTE: "pintohome" is an undocumented verb, which calls an undocumented COM class, windows.storage.dll!CPinToFrequentExecute : public IExecuteCommand, ...
+				return windowsFile.TryInvokeContextMenuVerb("pintohome");
 			}, App.Logger);
 
 			// The file watcher will update the collection automatically
@@ -236,27 +258,22 @@ namespace Files.App.ViewModels.UserControls.Widgets
 			if (item is not WidgetFolderCardItem folderCardItem || folderCardItem.Path is null)
 				return;
 
-			HRESULT hr = default;
-			using ComPtr<IAgileReference> pAgileReference = default;
-
-			unsafe
-			{
-				hr = PInvoke.RoGetAgileReference(AgileReferenceOptions.AGILEREFERENCE_DEFAULT, IID.IID_IShellItem, (IUnknown*)folderCardItem.Item.ThisPtr, pAgileReference.GetAddressOf());
-			}
+			HRESULT hr = PInvoke.RoGetAgileReference(AgileReferenceOptions.AGILEREFERENCE_DEFAULT, typeof(IShellItem).GUID, folderCardItem.Item.ThisPtr, out IAgileReference pAgileReference);
+			if (hr.ThrowIfFailedOnDebug().Failed)
+				return;
 
 			// Unpin from Quick Access on Windows
 			hr = await STATask.Run(() =>
 			{
-				unsafe
-				{
-					IShellItem* pShellItem = null;
-					hr = pAgileReference.Get()->Resolve(IID.IID_IShellItem, (void**)&pShellItem);
-					using var windowsFile = new WindowsFile(pShellItem);
+				hr = pAgileReference.Resolve(out IShellItem pShellItem);
+				if (hr.ThrowIfFailedOnDebug().Failed)
+					return hr;
 
-					// NOTE: "unpinfromhome" is an undocumented verb, which calls an undocumented COM class, windows.storage.dll!CRemoveFromFrequentPlacesExecute : public IExecuteCommand, ...
-					// NOTE: "remove" is for some shell folders where the "unpinfromhome" may not work
-					return windowsFile.TryInvokeContextMenuVerbs(["unpinfromhome", "remove"], true);
-				}
+				using var windowsFile = new WindowsFile(pShellItem);
+
+				// NOTE: "unpinfromhome" is an undocumented verb, which calls an undocumented COM class, windows.storage.dll!CRemoveFromFrequentPlacesExecute : public IExecuteCommand, ...
+				// NOTE: "remove" is for some shell folders where the "unpinfromhome" may not work
+				return windowsFile.TryInvokeContextMenuVerbs(["unpinfromhome", "remove"], true);
 			}, App.Logger);
 
 			if (hr.ThrowIfFailedOnDebug().Failed)
@@ -267,46 +284,65 @@ namespace Files.App.ViewModels.UserControls.Widgets
 
 		private void ExecuteOpenPropertiesCommand(WidgetFolderCardItem? item)
 		{
-			if (!HomePageContext.IsAnyItemRightClicked || item is null || item.Item is null)
+			if (!HomePageContext.IsAnyItemRightClicked || item?.Item is null)
 				return;
 
-			var flyout = HomePageContext.ItemContextFlyoutMenu;
-			EventHandler<object> flyoutClosed = null!;
+			var flyout = HomePageContext.ItemContextFlyoutMenu
+				?? throw new InvalidOperationException("The quick-access item context menu is not available.");
 
-			flyoutClosed = async (s, e) =>
+			async void FlyoutClosed(object? sender, object args)
 			{
-				flyout!.Closed -= flyoutClosed;
+				flyout.Closed -= FlyoutClosed;
+				var itemPath = item.Path
+					?? throw new InvalidOperationException("The quick-access item does not have a path.");
+				var shellPage = ContentPageContext.ShellPage
+					?? throw new InvalidOperationException("There is no active shell page for quick-access properties.");
+				var shellViewModel = shellPage.GetRequiredShellViewModel();
 
-				ListedItem listedItem = new(null!)
+				ListedItem listedItem = new(null)
 				{
-					ItemPath = item.Path,
+					ItemPath = itemPath,
 					ItemNameRaw = item.Text,
 					PrimaryItemAttribute = StorageItemTypes.Folder,
 					ItemType = Strings.Folder.GetLocalizedResource(),
 				};
 
-				if (!string.Equals(item.Path, Constants.UserEnvironmentPaths.RecycleBinPath, StringComparison.OrdinalIgnoreCase))
+				if (!string.Equals(itemPath, Constants.UserEnvironmentPaths.RecycleBinPath, StringComparison.OrdinalIgnoreCase))
 				{
-					BaseStorageFolder matchingStorageFolder = await ContentPageContext.ShellPage!.ShellViewModel.GetFolderFromPathAsync(item.Path);
+					BaseStorageFolder? matchingStorageFolder = (await shellViewModel.GetFolderFromPathAsync(itemPath)).Result;
 					if (matchingStorageFolder is not null)
 					{
-						var syncStatus = await ContentPageContext.ShellPage!.ShellViewModel.CheckCloudDriveSyncStatusAsync(matchingStorageFolder);
+						var syncStatus = await shellViewModel.CheckCloudDriveSyncStatusAsync(matchingStorageFolder);
 						listedItem.SyncStatusUI = CloudDriveSyncStatusUI.FromCloudDriveSyncStatus(syncStatus);
 					}
 				}
 
-				FilePropertiesHelpers.OpenPropertiesWindow(listedItem, ContentPageContext.ShellPage!);
-			};
+				FilePropertiesHelpers.OpenPropertiesWindow(listedItem, shellPage);
+			}
 
-			flyout!.Closed += flyoutClosed;
+			flyout.Closed += FlyoutClosed;
 		}
 
 		// Disposer
 
 		public void Dispose()
 		{
+			if (isDisposed)
+				return;
+
+			isDisposed = true;
+			Items.CollectionChanged -= Items_CollectionChanged;
+			if (_quickAccessFolderWatcher is not null)
+			{
+				_quickAccessFolderWatcher.EnableRaisingEvents = false;
+				_quickAccessFolderWatcher.Changed -= QuickAccessFolderWatcher_Changed;
+				_quickAccessFolderWatcher.Dispose();
+			}
+
 			foreach (var item in Items)
 				item.Dispose();
+
+			Items.Clear();
 		}
 	}
 }
